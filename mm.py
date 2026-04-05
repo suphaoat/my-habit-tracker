@@ -13,7 +13,7 @@ st.set_page_config(page_title="✅ My Planner & Tracker")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ⚠️ ผมใส่ลิงก์ Google Sheets ของคุณให้เรียบร้อยแล้วครับ!
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1yxUEfegzr1zPWHP0sSacfHFAapzYUFhjlCLQKh0Z0YA/edit"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/16e67op4_nymQ7lky9yolJ-IrFbWSLaNJcJTcsuua1LU/edit?gid=0#gid=0"
 
 USERS = {
     "suphaoat": "1234",   
