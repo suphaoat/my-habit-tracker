@@ -1,298 +1,225 @@
 import streamlit as st
 import pandas as pd
-from datetime import date
-import os
-import streamlit.components.v1 as components
-from streamlit_calendar import calendar
+from datetime import date, datetime
+from streamlit_gsheets import GSheetsConnection
+
+# ตั้งค่าหน้าเว็บ
+st.set_page_config(page_title="💰 My Finance Tracker", layout="wide")
 
 # =========================================================
-# 🔐 ส่วนที่ 1 : ตั้งค่ารายชื่อผู้ใช้งานและรหัสผ่าน
+# 📂 ส่วนที่ 1 : ระบบฐานข้อมูลผ่าน Google Sheets
 # =========================================================
-# คุณสามารถเปลี่ยนชื่อและรหัสผ่านตรงนี้ได้ตามใจชอบเลยครับ!
-USERS = {
-    "suphaoat": "1234",   # บัญชีของคุณ (เปลี่ยนรหัสได้)
-    "tomatogisss": "1234"      # บัญชีของแฟน (เปลี่ยนชื่อและรหัสได้)
-}
+# สร้างการเชื่อมต่อกับ Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# ตั้งค่าความจำของเว็บ (Session State) เพื่อจำว่าใครล็อกอินอยู่
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.username = ""
+# ⚠️ ลิงก์สมุดบัญชี Google Sheets ของคุณ (เอาลิงก์มาวางในเครื่องหมายคำพูด)
+SHEET_URL = "ลิงก์_URL_ของ_Sheets_ของคุณ_ใส่ตรงนี้" 
 
-# =========================================================
-# 🚪 ส่วนที่ 2 : หน้าต่าง Login (ด่านหน้า)
-# =========================================================
-def login_page():
-    # จัดหน้าตาให้อยู่ตรงกลางสวยๆ
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.write("")
-        st.write("")
-        st.title("🔐 เข้าสู่ระบบ")
-        st.write("My Daily Habit Tracker & Planner")
-        
-        with st.container(border=True):
-            input_user = st.text_input("👤 ชื่อผู้ใช้งาน (Username)")
-            input_pass = st.text_input("🔑 รหัสผ่าน (Password)", type="password") # type=password ทำให้พิมพ์แล้วเป็นจุดดำๆ
-            
-            if st.button("เข้าสู่ระบบ", use_container_width=True, type="primary"):
-                if input_user in USERS and USERS[input_user] == input_pass:
-                    st.session_state.logged_in = True
-                    st.session_state.username = input_user
-                    st.success("เข้าสู่ระบบสำเร็จ! กำลังพาท่านเข้าสู่แอป...")
-                    st.rerun() # รีเฟรชหน้าเว็บเพื่อเปลี่ยนหน้า
-                else:
-                    st.error("❌ ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง!")
+# ฟังก์ชันโหลดข้อมูลจาก Google Sheets
+def load_data():
+    try:
+        # ดึงข้อมูลจากชีตที่ชื่อว่า "Sheet1" (ชีตแรกสุด)
+        df = conn.read(spreadsheet=SHEET_URL, worksheet="Sheet1")
+        # ถ้าชีตเพิ่งสร้างใหม่และยังว่างเปล่า ให้สร้างหัวตารางเตรียมไว้
+        if df.empty or 'วันที่' not in df.columns:
+            return pd.DataFrame(columns=["วันที่", "ประเภท", "หมวดหมู่", "จำนวนเงิน", "บันทึกช่วยจำ"])
+        return df.dropna(how='all') # ลบแถวที่ว่างเปล่าออก
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ: {e}")
+        return pd.DataFrame(columns=["วันที่", "ประเภท", "หมวดหมู่", "จำนวนเงิน", "บันทึกช่วยจำ"])
+
+# ฟังก์ชันบันทึกข้อมูลทับลงไปใน Google Sheets
+def save_data(df_to_save):
+    # อัปเดตข้อมูลทับกลับไปที่ชีต
+    conn.update(spreadsheet=SHEET_URL, worksheet="Sheet1", data=df_to_save)
+    st.cache_data.clear() # เคลียร์ความจำแคชเพื่อให้เว็บดึงข้อมูลใหม่สุด
 
 # =========================================================
-# 🏠 ส่วนที่ 3 : หน้าต่างแอปหลัก (จะเห็นก็ต่อเมื่อล็อกอินผ่าน)
+# ⚙️ ตั้งค่าหมวดหมู่
 # =========================================================
-def main_app():
-    user = st.session_state.username
+# ในเวอร์ชันนี้ เราจะใช้หมวดหมู่คงที่ในโค้ดไปก่อน เพื่อความเสถียร
+expense_categories = [
+    "🏠 ค่าที่อยู่อาศัย (ค่าเช่า, ผ่อนบ้าน)",
+    "💡 ค่าสาธารณูปโภค (ค่าน้ำ, ค่าไฟ, เน็ต)",
+    "🚗 ค่าเดินทาง (น้ำมัน, รถสาธารณะ)",
+    "🍜 ค่าอาหาร (จำเป็น)",
+    "🏥 ค่าสุขภาพ (ประกัน, หาหมอ)",
+    "💳 ค่าผ่อนชำระ (ผ่อนรถ, หนี้สิน)",
+    "🛍️ ช็อปปิ้ง (เสื้อผ้า, เครื่องสำอาง)",
+    "🎬 ความบันเทิง (ดูหนัง, ท่องเที่ยว, Netflix)",
+    "🧴 ของใช้ส่วนตัว",
+    "🙏 ทำบุญ / ให้ครอบครัว",
+    "➕ อื่นๆ"
+]
+
+# =========================================================
+# 🧮 ส่วนที่ 2 : ฟังก์ชันคำนวณยอดเงิน
+# =========================================================
+def calculate_balance():
+    df = load_data()
+    if df.empty:
+        return 0, 0, 0, 0
     
-    # 🌟 ทีเด็ดอยู่ตรงนี้: ตั้งชื่อไฟล์ข้อมูลให้แยกตามชื่อคนล็อกอิน!
-    DATA_FILE = f"habit_data_{user}.csv"
-    HABIT_FILE = f"habits_list_{user}.txt"
-    NOTES_FILE = f"notes_data_{user}.csv"
+    total_income = pd.to_numeric(df[df['ประเภท'] == '🟢 รายรับ']['จำนวนเงิน'], errors='coerce').sum()
+    total_expense = pd.to_numeric(df[df['ประเภท'] == '🔴 รายจ่าย']['จำนวนเงิน'], errors='coerce').sum()
+    total_savings = pd.to_numeric(df[df['ประเภท'] == '🐷 เงินเก็บ']['จำนวนเงิน'], errors='coerce').sum()
+    
+    current_balance = total_income - total_expense - total_savings
+    return total_income, total_expense, total_savings, current_balance
 
-    # --- ระบบจัดการรายชื่อกิจกรรม ---
-    default_habits = [
-        "🏋️ ยกน้ำหนัก / ออกกำลังกาย",
-        "🏸 ตีแบดมินตัน",
-        "🔬 ศึกษา Thalassiosira / ทำแล็บ",
-        "💻 เขียนโค้ด / วิเคราะห์ข้อมูล",
-        "🎣 ตกปลา"
-    ]
+# =========================================================
+# 🧭 ส่วนที่ 3 : เมนูและการนำทาง
+# =========================================================
+st.sidebar.title("💰 Finance Tracker (Pro)")
+st.sidebar.caption("เชื่อมต่อข้อมูลปลอดภัยด้วย Google Sheets")
 
-    if not os.path.exists(HABIT_FILE):
-        with open(HABIT_FILE, "w", encoding="utf-8") as f:
-            for h in default_habits:
-                f.write(h + "\n")
+page = st.sidebar.radio("เลือกเมนูการใช้งาน:", [
+    "📝 บันทึกรับ-จ่าย", 
+    "📊 สรุปยอดสถิติ", 
+    "⚙️ จัดการข้อมูล (แก้ไข/ลบ)"
+])
 
-    with open(HABIT_FILE, "r", encoding="utf-8") as f:
-        habits = [line.strip() for line in f.readlines() if line.strip()]
+# อัปเดตยอดเงินแบบเรียลไทม์ไว้ที่ Sidebar
+inc, exp, sav, bal = calculate_balance()
+st.sidebar.divider()
+st.sidebar.metric("💵 เงินคงเหลือ (พร้อมใช้)", f"฿ {bal:,.2f}")
+st.sidebar.metric("🐷 เงินเก็บสะสมทั้งหมด", f"฿ {sav:,.2f}")
 
-    # --- เมนูด้านข้าง (Sidebar) ---
-    with st.sidebar:
-        st.title(f"👋 สวัสดี, {user}!")
+# =========================================================
+# 📝 หน้าที่ 1 : บันทึกรับ-จ่าย และโอนเข้าเงินเก็บ
+# =========================================================
+if page == "📝 บันทึกรับ-จ่าย":
+    st.title("📝 บันทึกรายรับ-รายจ่าย")
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🟢 รายรับรวม", f"฿ {inc:,.2f}")
+    col2.metric("🔴 รายจ่ายรวม", f"฿ {exp:,.2f}")
+    col3.metric("💵 เงินคงเหลือปัจจุบัน", f"฿ {bal:,.2f}")
+    
+    st.divider()
+    
+    tab1, tab2, tab3 = st.tabs(["🔴 บันทึกรายจ่าย", "🟢 บันทึกรายรับ", "🐷 เก็บเงินคงเหลือ"])
+    
+    with tab1:
+        with st.form("expense_form", clear_on_submit=True):
+            e_date = st.date_input("วันที่:", date.today())
+            e_cat = st.selectbox("หมวดหมู่:", expense_categories)
+            e_amt = st.number_input("จำนวนเงิน (บาท):", min_value=0.0, step=10.0)
+            e_note = st.text_input("บันทึกช่วยจำ (เช่น ค่าข้าวผัด, ค่าเน็ต):")
+            if st.form_submit_button("💾 บันทึกรายจ่าย", type="primary"):
+                df_existing = load_data()
+                new_row = pd.DataFrame([{"วันที่": str(e_date), "ประเภท": "🔴 รายจ่าย", "หมวดหมู่": e_cat, "จำนวนเงิน": e_amt, "บันทึกช่วยจำ": e_note}])
+                df_updated = pd.concat([df_existing, new_row], ignore_index=True)
+                save_data(df_updated)
+                st.success("บันทึกรายจ่ายลง Google Sheets เรียบร้อย!")
+                st.rerun()
+
+    with tab2:
+        with st.form("income_form", clear_on_submit=True):
+            i_date = st.date_input("วันที่:", date.today())
+            i_cat = st.selectbox("ที่มาของรายรับ:", ["เงินเดือน", "โบนัส", "รายได้เสริม", "อื่นๆ"])
+            i_amt = st.number_input("จำนวนเงิน (บาท):", min_value=0.0, step=100.0)
+            i_note = st.text_input("บันทึกช่วยจำ:")
+            if st.form_submit_button("💾 บันทึกรายรับ", type="primary"):
+                df_existing = load_data()
+                new_row = pd.DataFrame([{"วันที่": str(i_date), "ประเภท": "🟢 รายรับ", "หมวดหมู่": i_cat, "จำนวนเงิน": i_amt, "บันทึกช่วยจำ": i_note}])
+                df_updated = pd.concat([df_existing, new_row], ignore_index=True)
+                save_data(df_updated)
+                st.success("บันทึกรายรับลง Google Sheets เรียบร้อย!")
+                st.rerun()
+                
+    with tab3:
+        st.write("### 🐷 ตัดยอดเงินคงเหลือไปเป็นเงินเก็บ")
+        st.write(f"ตอนนี้คุณมีเงินคงเหลือที่สามารถเก็บได้: **฿ {bal:,.2f}**")
         
-        # ปุ่มออกจากระบบ
-        if st.button("🚪 ออกจากระบบ (Logout)", type="secondary"):
-            st.session_state.logged_in = False
-            st.session_state.username = ""
+        save_all = st.checkbox("โอนเงินคงเหลือทั้งหมดเข้ากระปุก")
+        if save_all:
+            s_amt = st.number_input("จำนวนเงินที่จะเก็บ (บาท):", value=float(bal), disabled=True)
+            s_amt = float(bal)
+        else:
+            s_amt = st.number_input("พิมพ์จำนวนเงินที่ต้องการเก็บ (บาท):", min_value=0.0, max_value=float(bal) if bal > 0 else 0.0, step=100.0)
+            
+        s_date = st.date_input("วันที่โอนเข้ากระปุก:", date.today())
+        s_note = st.text_input("เป้าหมายการเก็บเงิน (เช่น ทริปเที่ยว, ซื้อของ):")
+        
+        if st.button("💾 ยืนยันการเก็บเงิน", type="primary"):
+            if s_amt > 0:
+                df_existing = load_data()
+                new_row = pd.DataFrame([{"วันที่": str(s_date), "ประเภท": "🐷 เงินเก็บ", "หมวดหมู่": "ออมเงิน", "จำนวนเงิน": s_amt, "บันทึกช่วยจำ": s_note}])
+                df_updated = pd.concat([df_existing, new_row], ignore_index=True)
+                save_data(df_updated)
+                st.success(f"โอนเงิน ฿{s_amt:,.2f} เข้ากระปุกเรียบร้อยแล้ว! 🥳")
+                st.rerun()
+            else:
+                st.warning("จำนวนเงินต้องมากกว่า 0 หรือคุณไม่มีเงินคงเหลือให้เก็บครับ")
+
+# =========================================================
+# 📊 หน้าที่ 2 : สรุปยอดและกราฟ
+# =========================================================
+elif page == "📊 สรุปยอดสถิติ":
+    st.title("📊 สรุปยอดและวิเคราะห์")
+    df = load_data()
+    
+    if not df.empty:
+        df['วันที่'] = pd.to_datetime(df['วันที่'])
+        df['ปี'] = df['วันที่'].dt.year
+        df['เดือน'] = df['วันที่'].dt.month
+        df['ปี-เดือน'] = df['วันที่'].dt.strftime('%Y-%m')
+        
+        filter_type = st.radio("เลือกรูปแบบการสรุปยอด:", ["ภาพรวมทั้งหมด", "รายเดือน", "รายปี"], horizontal=True)
+        
+        filtered_df = df.copy()
+        if filter_type == "รายเดือน":
+            months = sorted(df['ปี-เดือน'].unique(), reverse=True)
+            selected_month = st.selectbox("เลือกเดือน:", months)
+            filtered_df = df[df['ปี-เดือน'] == selected_month]
+        elif filter_type == "รายปี":
+            years = sorted(df['ปี'].unique(), reverse=True)
+            selected_year = st.selectbox("เลือกปี:", years)
+            filtered_df = df[df['ปี'] == selected_year]
+            
+        f_inc = pd.to_numeric(filtered_df[filtered_df['ประเภท'] == '🟢 รายรับ']['จำนวนเงิน'], errors='coerce').sum()
+        f_exp = pd.to_numeric(filtered_df[filtered_df['ประเภท'] == '🔴 รายจ่าย']['จำนวนเงิน'], errors='coerce').sum()
+        f_sav = pd.to_numeric(filtered_df[filtered_df['ประเภท'] == '🐷 เงินเก็บ']['จำนวนเงิน'], errors='coerce').sum()
+        
+        st.write("---")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🟢 รายรับรวม", f"฿ {f_inc:,.2f}")
+        col2.metric("🔴 รายจ่ายรวม", f"฿ {f_exp:,.2f}")
+        col3.metric("🐷 เงินเก็บ", f"฿ {f_sav:,.2f}")
+        
+        st.write("---")
+        st.subheader("📉 รายจ่ายแยกตามหมวดหมู่")
+        exp_df = filtered_df[filtered_df['ประเภท'] == '🔴 รายจ่าย']
+        if not exp_df.empty:
+            exp_df['จำนวนเงิน'] = pd.to_numeric(exp_df['จำนวนเงิน'], errors='coerce')
+            cat_sum = exp_df.groupby('หมวดหมู่')['จำนวนเงิน'].sum().sort_values(ascending=False)
+            st.bar_chart(cat_sum)
+            with st.expander("ดูตารางรายจ่ายแยกหมวดหมู่"):
+                st.dataframe(cat_sum.reset_index().style.format({"จำนวนเงิน": "฿ {:,.2f}"}))
+        else:
+            st.info("ไม่มีข้อมูลรายจ่ายในช่วงเวลานี้")
+    else:
+        st.info("💡 ยังไม่มีข้อมูลการบันทึกครับ")
+
+# =========================================================
+# ⚙️ หน้าที่ 3 : จัดการและลบข้อมูล
+# =========================================================
+elif page == "⚙️ จัดการข้อมูล (แก้ไข/ลบ)":
+    st.title("⚙️ ลบประวัติการบันทึก")
+    st.write("เลือกรายการที่ต้องการลบทิ้ง หากบันทึกผิดพลาด (ข้อมูลจะถูกลบออกจาก Google Sheets ด้วย)")
+    
+    df = load_data()
+    if not df.empty:
+        df_show = df.copy()
+        df_show.insert(0, "รหัสอ้างอิง (ID)", df_show.index)
+        st.dataframe(df_show, hide_index=True)
+        
+        del_id = st.selectbox("เลือก 'รหัสอ้างอิง (ID)' ของรายการที่ต้องการลบทิ้ง:", df_show['รหัสอ้างอิง (ID)'].tolist())
+        if st.button("❌ ยืนยันการลบรายการนี้", type="primary"):
+            df = df.drop(del_id)
+            save_data(df)
+            st.success("ลบข้อมูลสำเร็จ! ลบออกจาก Google Sheets แล้ว")
             st.rerun()
-            
-        st.divider()
-
-        # นาฬิกาธีมดำ
-        clock_html = """
-        <div id="clock" style="
-            font-family: 'Segoe UI', sans-serif; font-size: 24px; font-weight: bold; 
-            text-align: center; padding: 15px; background-color: #1E1E1E; 
-            color: #00FFAA; border-radius: 10px; margin-bottom: 20px;
-            border: 1px solid #333; box-shadow: 2px 2px 10px rgba(0,0,0,0.5);
-        "></div>
-        <script>
-            function updateTime() {
-                var now = new Date();
-                var timeString = now.toLocaleTimeString('th-TH', { hour12: false });
-                document.getElementById('clock').innerHTML = '⏰ ' + timeString;
-            }
-            setInterval(updateTime, 1000); updateTime(); 
-        </script>
-        """
-        components.html(clock_html, height=80)
-        
-        page = st.radio("เลือกหน้าต่างที่คุณต้องการ:", ["✅ Habit Tracker", "📅 ปฏิทินแพลนเนอร์"])
-
-    # --- หน้า Habit Tracker ---
-    if page == "✅ Habit Tracker":
-        st.title("✅ My Daily Habit Tracker")
-        st.write(f"พื้นที่ส่วนตัวของคุณ **{user}**")
-
-        with st.expander("⚙️ จัดการตัวเลือกกิจกรรม (เพิ่ม/ลบ)"):
-            tab1, tab2 = st.tabs(["➕ เพิ่มกิจกรรมใหม่", "🗑️ ลบกิจกรรมออก"])
-            
-            with tab1:
-                new_habit = st.text_input("พิมพ์ชื่อกิจกรรมที่ต้องการเพิ่ม:")
-                if st.button("เพิ่มเข้าสู่ระบบ"):
-                    if new_habit and new_habit not in habits:
-                        with open(HABIT_FILE, "a", encoding="utf-8") as f:
-                            f.write(new_habit + "\n")
-                        st.success(f"เพิ่ม '{new_habit}' เรียบร้อยแล้ว!")
-                        st.rerun() 
-                    elif new_habit in habits:
-                        st.warning("มีกิจกรรมนี้อยู่แล้วครับ!")
-                        
-            with tab2:
-                if len(habits) > 0:
-                    habit_to_delete = st.selectbox("เลือกกิจกรรมที่ต้องการลบออกชั่วคราว/ถาวร:", habits)
-                    if st.button("ลบกิจกรรมนี้", type="primary"):
-                        habits.remove(habit_to_delete)
-                        with open(HABIT_FILE, "w", encoding="utf-8") as f:
-                            for h in habits:
-                                f.write(h + "\n")
-                        st.success(f"ลบ '{habit_to_delete}' ออกจากตัวเลือกแล้ว!")
-                        st.rerun()
-                else:
-                    st.info("ไม่มีกิจกรรมเหลือให้ลบแล้วครับ")
-
-        st.divider()
-
-        today = date.today().strftime("%Y-%m-%d")
-        st.subheader(f"📅 วันที่: {today}")
-
-        options = ['✅ ทำแล้ว (Done)', '❌ ไม่ได้ทำ (Skip)', '🚙 มีธุระ (Errand)']
-        daily_results = {"วันที่": [today]}
-
-        if len(habits) > 0:
-            for habit in habits:
-                choice = st.radio(habit, options, index=1, horizontal=True)
-                daily_results[habit] = [choice]
-        else:
-            st.warning("⚠️ ตอนนี้ไม่มีกิจกรรมให้เลือกเลย ลองไปกดเพิ่มที่เมนูจัดการด้านบนดูนะครับ")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if len(habits) > 0 and st.button("💾 บันทึกข้อมูลวันนี้", use_container_width=True):
-                df_new = pd.DataFrame(daily_results)
-                if os.path.exists(DATA_FILE):
-                    df_existing = pd.read_csv(DATA_FILE)
-                    if today in df_existing['วันที่'].values:
-                        df_existing = df_existing[df_existing['วันที่'] != today]
-                    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                    df_combined = df_combined.sort_values(by='วันที่')
-                    df_combined.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
-                else:
-                    df_new.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
-                st.success("🎉 บันทึกข้อมูลเรียบร้อยแล้ว!")
-
-        with col2:
-            if st.button("ลบข้อมูลของวันนี้ทิ้ง 🔄", use_container_width=True):
-                if os.path.exists(DATA_FILE):
-                    df_existing = pd.read_csv(DATA_FILE)
-                    if today in df_existing['วันที่'].values:
-                        df_existing = df_existing[df_existing['วันที่'] != today]
-                        df_existing.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
-                        st.success("เคลียร์ข้อมูลของวันนี้ทิ้งแล้วครับ!")
-                        st.rerun()
-
-        st.divider()
-
-        st.subheader("📊 ประวัติและสถิติการทำกิจกรรม")
-
-        if os.path.exists(DATA_FILE):
-            df_history = pd.read_csv(DATA_FILE)
-            if not df_history.empty:
-                with st.expander("📝 ดูตารางข้อมูลบันทึกรายวัน"):
-                    st.dataframe(df_history)
-                
-                st.write("### 📈 เปอร์เซ็นต์ความสำเร็จ (แยกตามเดือน)")
-                df_calc = df_history.copy()
-                habit_cols = [col for col in df_calc.columns if col != 'วันที่']
-                df_calc['เดือน'] = pd.to_datetime(df_calc['วันที่']).dt.strftime('%Y-%m')
-                
-                for col in habit_cols:
-                    df_calc[col] = df_calc[col].apply(lambda x: 1 if str(x).startswith('✅') else 0)
-                    
-                monthly_stats = df_calc.groupby('เดือน')[habit_cols].mean() * 100
-                st.write("ตารางสรุปเปอร์เซ็นต์ %")
-                st.dataframe(monthly_stats.style.format("{:.1f}%"))
-                st.line_chart(monthly_stats)
-            else:
-                 st.info("💡 ตารางว่างเปล่า ลองบันทึกข้อมูลด้านบนดูก่อนนะ!")
-        else:
-            st.info("💡 ยังไม่มีข้อมูลประวัติการบันทึกครับ")
-
-    # --- หน้า ปฏิทินแพลนเนอร์ ---
-    elif page == "📅 ปฏิทินแพลนเนอร์":
-        st.title("📅 ปฏิทินแพลนเนอร์")
-        st.write(f"สมุดนัดหมายส่วนตัวของ **{user}**")
-        
-        if os.path.exists(NOTES_FILE):
-            df_notes = pd.read_csv(NOTES_FILE)
-        else:
-            df_notes = pd.DataFrame(columns=["วันที่", "รายละเอียด"])
-
-        calendar_events = []
-        for index, row in df_notes.iterrows():
-            calendar_events.append({
-                "title": row["รายละเอียด"], 
-                "start": row["วันที่"], 
-                "allDay": True, 
-                "backgroundColor": "#00FFAA", 
-                "borderColor": "#00FFAA",
-                "textColor": "#000000"
-            })
-
-        calendar_options = {
-            "headerToolbar": {
-                "left": "prev,next today",
-                "center": "title",
-                "right": "dayGridMonth,dayGridWeek,dayGridDay"
-            },
-            "initialView": "dayGridMonth",
-        }
-        
-        st.write("### 📅 ปฏิทินโน้ต")
-        calendar(events=calendar_events, options=calendar_options)
-
-        st.divider()
-        
-        with st.expander("➕ กดที่นี่เพื่อจดโน้ต/นัดหมายใหม่"):
-            with st.container():
-                st.write("✍️ พิมพ์รายละเอียดและเลือกวันที่:")
-                new_note_text = st.text_input("พิมพ์รายละเอียดนัดหมาย:")
-                new_note_date = st.date_input("เลือกวันที่:")
-                
-                if st.button("💾 บันทึกนัดหมายใหม่", type="primary"):
-                    if new_note_text.strip() != "":
-                        new_note_df = pd.DataFrame({"วันที่": [str(new_note_date)], "รายละเอียด": [new_note_text]})
-                        if os.path.exists(NOTES_FILE):
-                            df_notes_existing = pd.read_csv(NOTES_FILE)
-                            df_notes_updated = pd.concat([df_notes_existing, new_note_df], ignore_index=True)
-                            df_notes_updated = df_notes_updated.sort_values(by="วันที่")
-                            df_notes_updated.to_csv(NOTES_FILE, index=False, encoding='utf-8-sig')
-                        else:
-                            new_note_df.to_csv(NOTES_FILE, index=False, encoding='utf-8-sig')
-                        st.success(f"บันทึกโน้ตสำหรับวันที่ {new_note_date} เรียบร้อย!")
-                        st.rerun() 
-                    else:
-                        st.warning("⚠️ อย่าลืมพิมพ์รายละเอียดก่อนกดบันทึกนะครับ!")
-
-        st.divider()
-        
-        st.subheader("📌 จัดการโน้ตและนัดหมาย")
-        if os.path.exists(NOTES_FILE):
-            df_notes_all = pd.read_csv(NOTES_FILE)
-            if not df_notes_all.empty:
-                with st.expander("📝 ดูตารางข้อมูลนัดหมายทั้งหมด"):
-                    st.dataframe(df_notes_all)
-                    
-                st.write("🗑️ เลือกโน้ตที่ต้องการลบ:")
-                unique_dates = df_notes_all['วันที่'].unique()
-                note_date_to_del = st.selectbox("เลือกวันที่:", unique_dates)
-                
-                note_text_to_del = df_notes_all[df_notes_all['วันที่'] == note_date_to_del]['รายละเอียด'].values[0]
-                with st.chat_message("user", avatar="📅"):
-                    st.write(f"**นัดหมายวันที่:** {note_date_to_del}")
-                    st.write(note_text_to_del)
-
-                if st.button("ลบโน้ตนี้", type="primary"):
-                    df_notes_updated = df_notes_all[df_notes_all['วันที่'] != note_date_to_del]
-                    df_notes_updated.to_csv(NOTES_FILE, index=False, encoding='utf-8-sig')
-                    st.success("ลบโน้ตสำเร็จ!")
-                    st.rerun()
-            else:
-                st.info("💡 ยังไม่มีข้อมูลนัดหมายครับ")
-        else:
-            st.info("💡 ยังไม่มีข้อมูลนัดหมายครับ")
-
-# =========================================================
-# 🚦 ตัวสลับหน้า (ถ้าล็อกอินแล้วให้เข้าแอป ถ้ายังให้แสดงหน้า Login)
-# =========================================================
-if st.session_state.logged_in:
-    main_app()
-else:
-    login_page()
+    else:
+        st.info("ตารางว่างเปล่า ยังไม่มีรายการให้ลบครับ")
